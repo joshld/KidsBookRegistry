@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* Use .dark class on <html> instead of prefers-color-scheme */
+@custom-variant dark (&:where(.dark, .dark *));
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100svh;
+}
+
+html.dark {
+  background-color: #0f172a;
+}
+
+/* Strip border/padding html5-qrcode injects */
+#kbr-qr-reader {
+  border: none !important;
+  padding: 0 !important;
+}
+
+/* Hide the injected header text above the video and the bottom controls panel */
+#kbr-qr-reader__header_message,
+#kbr-qr-reader__dashboard {
+  display: none !important;
+}
+
+/* Fix the video to a controlled height so the manual input stays visible */
+#kbr-qr-reader video {
+  width: 100% !important;
+  height: 200px !important;
+  object-fit: cover !important;
+  display: block !important;
+}
+
+/* Match the canvas overlay to the same fixed height */
+#kbr-qr-reader canvas {
+  height: 200px !important;
+}
