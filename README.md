@@ -1,73 +1,105 @@
-# React + TypeScript + Vite
+# KidsBookRegistry
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A mobile-first web app for tracking children's books — what they own, what they want, and what relatives have claimed to buy as gifts. Built with Vite, React (TypeScript), and Tailwind CSS.
 
-Currently, two official plugins are available:
+Data is stored in the browser's `localStorage` on each device. There is no backend in this MVP.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Prerequisites
 
-## React Compiler
+- [Node.js](https://nodejs.org/) 18 or later (includes `npm`)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Local development
 
-## Expanding the ESLint configuration
+```bash
+# Install dependencies (first time only)
+npm install
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# Start the dev server
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open the URL shown in the terminal (usually `http://localhost:5173`).
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### Testing on your phone (same Wi‑Fi)
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+The barcode scanner needs a secure context (HTTPS) on mobile. For local development, use [ngrok](https://ngrok.com/) to tunnel your dev server over HTTPS.
+
+**1. Start Vite with network access**
+
+```bash
+npm run dev -- --host
 ```
+
+**2. Install and configure ngrok** (first time only)
+
+```bash
+# Install (Windows)
+winget install ngrok.ngrok
+
+# Add your authtoken from https://dashboard.ngrok.com/get-started/your-authtoken
+ngrok config add-authtoken YOUR_TOKEN_HERE
+```
+
+**3. Start the tunnel**
+
+In a second terminal, while the dev server is running:
+
+```bash
+ngrok http 5173
+```
+
+**4. Open the ngrok URL on your phone**
+
+Use the `https://…ngrok-free.dev` URL ngrok prints. Vite is already configured to allow ngrok hosts (`server.allowedHosts: true` in `vite.config.ts`).
+
+> **Note:** Your book data lives in the browser on whichever device you use — not on your PC. Testing on your phone creates a separate copy of the data in that phone's browser.
+
+## Production build
+
+```bash
+npm run build
+```
+
+This compiles TypeScript and outputs a static site to `dist/`.
+
+Preview the production build locally:
+
+```bash
+npm run preview
+```
+
+## Deploy
+
+The built app is a static site — deploy the contents of `dist/` to any static host.
+
+| Platform | Approach |
+|----------|----------|
+| **Netlify / Vercel / Cloudflare Pages** | Connect the repo or drag-and-drop `dist/` |
+| **GitHub Pages** | Upload `dist/` or use a GitHub Action |
+| **Any web server** | Copy `dist/` to the server and serve it |
+
+Because the app uses client-side routing (`react-router-dom`), configure your host to serve `index.html` for all routes (SPA fallback). Most static hosts do this automatically.
+
+### Share links
+
+After deploying, guest wish-list links look like:
+
+```
+https://your-domain.com/share/{childId}
+```
+
+Copy a share link from the dashboard ("Copy share link" on each child's card).
+
+## Other commands
+
+```bash
+npm run lint    # Run ESLint
+```
+
+## Features
+
+- **Library** — books a child already owns
+- **Wish list** — books they'd like; guests can claim items
+- **Barcode scanning** — camera or manual ISBN entry (Open Library API for metadata)
+- **Check a book** — scan to see if a title is owned or claimed across all registries
+- **Dark mode** — manual toggle, persisted in `localStorage`
