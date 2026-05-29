@@ -1,6 +1,6 @@
 import { useState, type Dispatch } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, PlusCircle, BookOpen, Library, Gift, Sun, Moon } from 'lucide-react';
+import { ArrowLeft, PlusCircle, Library, Gift, Sun, Moon } from 'lucide-react';
 import type { AppState, Action, ListType } from '../types';
 import BookCard from '../components/BookCard';
 import AddBookModal from '../components/AddBookModal';

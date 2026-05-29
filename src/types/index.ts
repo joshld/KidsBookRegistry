@@ -37,4 +37,5 @@ export type Action =
   | { type: 'ADD_BOOK'; book: Book }
   | { type: 'CLAIM_BOOK'; bookId: string; claimedBy: string }
   | { type: 'UNCLAIM_BOOK'; bookId: string }
-  | { type: 'REMOVE_BOOK'; bookId: string };
+  | { type: 'REMOVE_BOOK'; bookId: string }
+  | { type: 'REPLACE_STATE'; state: AppState };

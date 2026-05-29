@@ -1,72 +1,98 @@
-import { useReducer, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import type { AppState, Action } from './types';
-import { loadState, saveState } from './lib/storage';
+import { RegistryProvider, useRegistry } from './context/RegistryContext';
 import { useTheme } from './lib/useTheme';
+import { registryService } from './lib/storage/registryService';
+import type { Action } from './types';
 import DashboardView from './views/DashboardView';
 import RegistryView from './views/RegistryView';
 import PublicGuestView from './views/PublicGuestView';
+import SetupView from './views/SetupView';
+import OAuthCallbackView from './views/OAuthCallbackView';
+import SyncBanner from './components/SyncBanner';
 
-function reducer(state: AppState, action: Action): AppState {
-  switch (action.type) {
-    case 'SET_PROFILE':
-      return { ...state, profile: action.profile };
-    case 'ADD_CHILD':
-      return { ...state, children: [...state.children, action.child] };
-    case 'ADD_BOOK':
-      return { ...state, books: [...state.books, action.book] };
-    case 'CLAIM_BOOK':
-      return {
-        ...state,
-        books: state.books.map((b) =>
-          b.id === action.bookId
-            ? { ...b, status: 'Claimed', claimedBy: action.claimedBy }
-            : b,
-        ),
-      };
-    case 'UNCLAIM_BOOK':
-      return {
-        ...state,
-        books: state.books.map((b) =>
-          b.id === action.bookId
-            ? { ...b, status: 'Available', claimedBy: undefined }
-            : b,
-        ),
-      };
-    case 'REMOVE_BOOK':
-      return {
-        ...state,
-        books: state.books.filter((b) => b.id !== action.bookId),
-      };
-    default:
-      return state;
-  }
-}
+function AppRoutes() {
+  const {
+    bootPhase,
+    state,
+    dispatch,
+    theme,
+    toggleTheme,
+    prepareShareLink,
+    buildShareUrl,
+    mergeRemoteClaims,
+    syncStatus,
+  } = useAppShell();
 
-export default function App() {
-  const [state, dispatch] = useReducer(reducer, undefined, loadState);
-  const { theme, toggleTheme } = useTheme();
+  const [conflictMessage, setConflictMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    saveState(state);
-  }, [state]);
+    const interval = setInterval(() => {
+      setConflictMessage(registryService.getConflictMessage());
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  async function resolveConflict(useRemote: boolean) {
+    const merged = await registryService.resolveConflict(useRemote, state);
+    dispatch({ type: 'REPLACE_STATE', state: merged } as Action);
+    setConflictMessage(null);
+  }
+
+  if (bootPhase !== 'ready') {
+    return <SetupView />;
+  }
 
   return (
-    <BrowserRouter>
+    <>
+      <SyncBanner
+        status={syncStatus}
+        conflictMessage={conflictMessage}
+        onResolveConflict={(useRemote) => void resolveConflict(useRemote)}
+        onSyncClaims={() => void mergeRemoteClaims()}
+      />
       <Routes>
         <Route
           path="/"
-          element={<DashboardView state={state} dispatch={dispatch} theme={theme} toggleTheme={toggleTheme} />}
+          element={
+            <DashboardView
+              state={state}
+              dispatch={dispatch}
+              theme={theme}
+              toggleTheme={toggleTheme}
+              prepareShareLink={prepareShareLink}
+              buildShareUrl={buildShareUrl}
+            />
+          }
         />
         <Route
           path="/registry/:childId"
-          element={<RegistryView state={state} dispatch={dispatch} theme={theme} toggleTheme={toggleTheme} />}
+          element={
+            <RegistryView state={state} dispatch={dispatch} theme={theme} toggleTheme={toggleTheme} />
+          }
         />
-        <Route
-          path="/share/:childId"
-          element={<PublicGuestView dispatch={dispatch} />}
-        />
+        <Route path="/share/:childId" element={<PublicGuestView />} />
+        <Route path="/oauth/callback" element={<OAuthCallbackView />} />
       </Routes>
-    </BrowserRouter>
+    </>
+  );
+}
+
+function useAppShell() {
+  const registry = useRegistry();
+  const { theme, toggleTheme } = useTheme();
+  return { ...registry, theme, toggleTheme };
+}
+
+export default function App() {
+  return (
+    <RegistryProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/oauth/callback" element={<OAuthCallbackView />} />
+          <Route path="/*" element={<AppRoutes />} />
+        </Routes>
+      </BrowserRouter>
+    </RegistryProvider>
   );
 }

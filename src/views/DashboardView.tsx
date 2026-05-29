@@ -10,9 +10,17 @@ interface Props {
   dispatch: Dispatch<Action>;
   theme: 'light' | 'dark';
   toggleTheme: () => void;
+  buildShareUrl: (childId: string) => string | null;
+  prepareShareLink: (childId: string) => Promise<string | null>;
 }
 
-export default function DashboardView({ state, dispatch, theme, toggleTheme }: Props) {
+export default function DashboardView({
+  state,
+  dispatch,
+  theme,
+  toggleTheme,
+  prepareShareLink,
+}: Props) {
   const navigate = useNavigate();
   const [showProfileSetup, setShowProfileSetup] = useState(!state.profile);
   const [email, setEmail] = useState('');
@@ -42,9 +50,9 @@ export default function DashboardView({ state, dispatch, theme, toggleTheme }: P
     return { owned, wished };
   }
 
-  function copyShareLink(childId: string) {
-    const url = `${window.location.origin}/share/${childId}`;
-    navigator.clipboard.writeText(url).catch(() => {});
+  async function copyShareLink(childId: string) {
+    const url = await prepareShareLink(childId);
+    if (url) navigator.clipboard.writeText(url).catch(() => {});
   }
 
   if (showProfileSetup) {
