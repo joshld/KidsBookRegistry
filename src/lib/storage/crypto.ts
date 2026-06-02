@@ -50,8 +50,8 @@ export function randomShareKey(): string {
   return base64UrlEncode(randomBytes(32));
 }
 
-async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
-  return globalThis.crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, 'AES-GCM', false, [
+async function importAesKey(raw: Uint8Array, extractable = false): Promise<CryptoKey> {
+  return globalThis.crypto.subtle.importKey('raw', raw.buffer as ArrayBuffer, 'AES-GCM', extractable, [
     'encrypt',
     'decrypt',
   ]);
@@ -71,7 +71,8 @@ export async function deriveMasterKey(passphrase: string, salt: Uint8Array): Pro
     baseKey,
     256,
   );
-  return importAesKey(new Uint8Array(bits));
+  // Extractable so the key can be wrapped for "remember on this device".
+  return importAesKey(new Uint8Array(bits), true);
 }
 
 export async function deriveKeyFromShareKey(shareKey: string): Promise<CryptoKey> {
@@ -129,7 +130,7 @@ export async function unwrapMasterKey(wrapped: EncryptedBlob, deviceKey: CryptoK
     deviceKey,
     ciphertext.buffer as ArrayBuffer,
   );
-  return importKeyRaw(new Uint8Array(raw));
+  return importAesKey(new Uint8Array(raw), true);
 }
 
 export async function getOrCreateDeviceKey(): Promise<CryptoKey> {

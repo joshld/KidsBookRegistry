@@ -36,7 +36,12 @@ import {
   setWrappedMasterKey,
 } from './localCache';
 import type { StorageProvider } from './StorageProvider';
-import { createLocalBlobProvider } from './providers/localBlob';
+import {
+  createLocalBlobProvider,
+  LocalBlobProvider,
+  readLocalProviderFile,
+  writeLocalProviderFile,
+} from './providers/localBlob';
 import { createGoogleDriveProvider, GoogleDriveProvider } from './providers/googleDrive';
 import type {
   ClaimRecord,
@@ -46,6 +51,7 @@ import type {
   SyncStatus,
 } from './types';
 import {
+  LOCAL_REGISTRY_FILE_ID,
   MANIFEST_FILE,
   REGISTRY_CURRENT,
   REGISTRY_PREV,
@@ -408,6 +414,18 @@ class RegistryService {
 
   async prepareShareLink(childId: string, state: AppState): Promise<string | null> {
     await this.save(state);
+
+    if (this.status.state === 'error') {
+      throw new Error(this.status.error ?? 'Could not sync registry before sharing');
+    }
+
+    if (
+      this.status.state === 'offline' &&
+      this.provider instanceof GoogleDriveProvider
+    ) {
+      throw new Error('Offline — connect to the internet before sharing');
+    }
+
     return this.buildShareUrl(childId);
   }
 
@@ -425,6 +443,9 @@ class RegistryService {
     if (this.provider instanceof GoogleDriveProvider) {
       return this.provider.getRegistryFileId();
     }
+    if (this.provider instanceof LocalBlobProvider) {
+      return LOCAL_REGISTRY_FILE_ID;
+    }
     return undefined;
   }
 
@@ -435,10 +456,12 @@ class RegistryService {
   ): Promise<{ childName: string; books: import('./types').PublicBookSlice[] } | null> {
     let blob: Uint8Array | null = null;
 
-    if (this.provider?.readFile) {
+    if (fileId === LOCAL_REGISTRY_FILE_ID) {
+      blob = await readLocalProviderFile(REGISTRY_CURRENT);
+    } else if (this.provider?.readFile) {
       blob = await this.provider.readFile(REGISTRY_CURRENT);
     }
-    if (!blob) {
+    if (!blob && fileId !== LOCAL_REGISTRY_FILE_ID) {
       blob = await GoogleDriveProvider.fetchPublicFile(fileId);
     }
     if (!blob) return null;
@@ -456,9 +479,14 @@ class RegistryService {
     bookId: string,
     claimedBy: string,
   ): Promise<void> {
-    let blob = await GoogleDriveProvider.fetchPublicFile(fileId);
-    if (!blob && this.provider) {
-      blob = await this.provider.readFile(REGISTRY_CURRENT);
+    let blob: Uint8Array | null = null;
+    if (fileId === LOCAL_REGISTRY_FILE_ID) {
+      blob = await readLocalProviderFile(REGISTRY_CURRENT);
+    } else {
+      blob = await GoogleDriveProvider.fetchPublicFile(fileId);
+      if (!blob && this.provider) {
+        blob = await this.provider.readFile(REGISTRY_CURRENT);
+      }
     }
     if (!blob) throw new Error('Could not fetch registry');
 
@@ -468,7 +496,10 @@ class RegistryService {
     const bytes = serializeRegistryFile(updated);
 
     let uploaded = false;
-    if (this.provider?.guestUpdateRegistry) {
+    if (fileId === LOCAL_REGISTRY_FILE_ID) {
+      await writeLocalProviderFile(REGISTRY_CURRENT, bytes);
+      uploaded = true;
+    } else if (this.provider?.guestUpdateRegistry) {
       try {
         await this.provider.guestUpdateRegistry(fileId, bytes);
         uploaded = true;
@@ -476,7 +507,7 @@ class RegistryService {
         uploaded = false;
       }
     }
-    if (!uploaded) {
+    if (!uploaded && fileId !== LOCAL_REGISTRY_FILE_ID) {
       uploaded = await GoogleDriveProvider.guestUpdatePublicFile(fileId, bytes);
     }
     if (!uploaded) {

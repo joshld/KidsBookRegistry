@@ -19,7 +19,6 @@ function AppRoutes() {
     theme,
     toggleTheme,
     prepareShareLink,
-    buildShareUrl,
     mergeRemoteClaims,
     syncStatus,
   } = useAppShell();
@@ -60,8 +59,8 @@ function AppRoutes() {
               dispatch={dispatch}
               theme={theme}
               toggleTheme={toggleTheme}
+              syncStatus={syncStatus}
               prepareShareLink={prepareShareLink}
-              buildShareUrl={buildShareUrl}
             />
           }
         />

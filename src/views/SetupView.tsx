@@ -1,8 +1,23 @@
 import { useState } from 'react';
 import { BookOpen, Cloud, HardDrive, Loader2, Lock } from 'lucide-react';
 import { useRegistry } from '../context/RegistryContext';
+import { GoogleDriveAuthError } from '../lib/storage/providers/googleDrive';
 
 type Step = 'provider' | 'passphrase' | 'unlock';
+
+function formatDriveError(err: unknown): { message: string; details: string | null } {
+  if (err instanceof GoogleDriveAuthError) {
+    if (import.meta.env.DEV) {
+      console.error('[Google Drive auth]', err.message, err.details);
+    }
+    return { message: err.message, details: err.details ?? null };
+  }
+  const message = err instanceof Error ? err.message : 'Failed to connect Google Drive';
+  if (import.meta.env.DEV && err instanceof Error) {
+    console.error('[Google Drive auth]', err);
+  }
+  return { message, details: null };
+}
 
 export default function SetupView() {
   const {
@@ -20,17 +35,21 @@ export default function SetupView() {
   const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
   const hasGoogleClientId = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
 
   async function handleConnectDrive() {
     setLoading(true);
     setError('');
+    setErrorDetails(null);
     try {
       await connectDrive();
       setStep('unlock');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect Google Drive');
+      const formatted = formatDriveError(err);
+      setError(formatted.message);
+      setErrorDetails(formatted.details);
     } finally {
       setLoading(false);
     }
@@ -113,7 +132,12 @@ export default function SetupView() {
 
         {error && (
           <div className="mb-4 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-400">
-            {error}
+            <p className="font-medium">{error}</p>
+            {errorDetails && (
+              <p className="text-xs mt-2 text-red-600/90 dark:text-red-300/90 whitespace-pre-wrap break-words">
+                {errorDetails}
+              </p>
+            )}
           </div>
         )}
 

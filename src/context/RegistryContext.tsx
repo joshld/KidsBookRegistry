@@ -90,6 +90,15 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
     registryService.scheduleSave(state);
   }, [state, bootPhase]);
 
+  useEffect(() => {
+    if (bootPhase !== 'ready') return;
+    const syncWhenOnline = () => {
+      void registryService.flushPending();
+    };
+    window.addEventListener('online', syncWhenOnline);
+    return () => window.removeEventListener('online', syncWhenOnline);
+  }, [bootPhase]);
+
   async function boot() {
     setBootPhase('loading');
     const config = await getProviderConfig();

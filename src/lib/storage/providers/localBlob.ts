@@ -111,6 +111,16 @@ export class LocalBlobProvider implements StorageProvider {
   }
 }
 
+export async function readLocalProviderFile(name: string): Promise<Uint8Array | null> {
+  const buf = await idbGet(BLOB_STORE, name);
+  return buf ? new Uint8Array(buf as ArrayBuffer) : null;
+}
+
+export async function writeLocalProviderFile(name: string, data: Uint8Array): Promise<void> {
+  await idbPut(BLOB_STORE, name, data.buffer as ArrayBuffer);
+  await idbPut(REV_STORE, name, Date.now().toString());
+}
+
 export async function clearLocalProvider(): Promise<void> {
   for (const name of [MANIFEST_FILE, REGISTRY_CURRENT, REGISTRY_PREV, REGISTRY_TMP]) {
     try {

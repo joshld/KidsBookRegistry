@@ -2,6 +2,7 @@ import { useState, type Dispatch } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, PlusCircle, User, Share2, ScanSearch, Sun, Moon } from 'lucide-react';
 import type { AppState, Action } from '../types';
+import type { SyncStatus } from '../lib/storage/registryService';
 import { crypto } from '../lib/uid';
 import CheckBookModal from '../components/CheckBookModal';
 
@@ -10,7 +11,7 @@ interface Props {
   dispatch: Dispatch<Action>;
   theme: 'light' | 'dark';
   toggleTheme: () => void;
-  buildShareUrl: (childId: string) => string | null;
+  syncStatus: SyncStatus;
   prepareShareLink: (childId: string) => Promise<string | null>;
 }
 
@@ -19,10 +20,12 @@ export default function DashboardView({
   dispatch,
   theme,
   toggleTheme,
+  syncStatus,
   prepareShareLink,
 }: Props) {
   const navigate = useNavigate();
   const [showProfileSetup, setShowProfileSetup] = useState(!state.profile);
+  const [shareFeedback, setShareFeedback] = useState<{ childId: string; message: string; tone: 'ok' | 'err' } | null>(null);
   const [email, setEmail] = useState('');
   const [showAddChild, setShowAddChild] = useState(false);
   const [childName, setChildName] = useState('');
@@ -51,8 +54,27 @@ export default function DashboardView({
   }
 
   async function copyShareLink(childId: string) {
-    const url = await prepareShareLink(childId);
-    if (url) navigator.clipboard.writeText(url).catch(() => {});
+    setShareFeedback(null);
+    if (syncStatus.state === 'saving') {
+      setShareFeedback({ childId, message: 'Still saving — try again in a moment', tone: 'err' });
+      return;
+    }
+    try {
+      const url = await prepareShareLink(childId);
+      if (!url) {
+        setShareFeedback({ childId, message: 'Could not build share link', tone: 'err' });
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      setShareFeedback({ childId, message: 'Share link copied', tone: 'ok' });
+      window.setTimeout(() => setShareFeedback((f) => (f?.childId === childId ? null : f)), 3000);
+    } catch (err) {
+      setShareFeedback({
+        childId,
+        message: err instanceof Error ? err.message : 'Could not copy share link',
+        tone: 'err',
+      });
+    }
   }
 
   if (showProfileSetup) {
@@ -170,14 +192,26 @@ export default function DashboardView({
                   </div>
                   <span className="text-slate-300 dark:text-slate-600 text-lg">›</span>
                 </button>
-                <div className="border-t border-slate-100 dark:border-slate-700 px-4 py-2">
+                <div className="border-t border-slate-100 dark:border-slate-700 px-4 py-2 flex items-center justify-between gap-2">
                   <button
-                    onClick={() => copyShareLink(child.id)}
-                    className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 active:opacity-60"
+                    onClick={() => void copyShareLink(child.id)}
+                    disabled={syncStatus.state === 'saving'}
+                    className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 active:opacity-60 disabled:opacity-50"
                   >
                     <Share2 size={12} />
                     Copy share link
                   </button>
+                  {shareFeedback?.childId === child.id && (
+                    <span
+                      className={`text-xs truncate ${
+                        shareFeedback.tone === 'ok'
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {shareFeedback.message}
+                    </span>
+                  )}
                 </div>
               </div>
             ))}

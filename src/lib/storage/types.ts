@@ -6,6 +6,8 @@ export const REGISTRY_CURRENT = 'registry.kbr';
 export const REGISTRY_PREV = 'registry.kbr.prev';
 export const REGISTRY_TMP = 'registry.kbr.tmp';
 export const APP_FOLDER = 'KidsBookRegistry';
+/** Query param value for local dev storage (same browser only). */
+export const LOCAL_REGISTRY_FILE_ID = 'local';
 
 export interface EncryptedBlob {
   iv: string;

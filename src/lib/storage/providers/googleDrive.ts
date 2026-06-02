@@ -19,9 +19,82 @@ const CAPABILITIES: StorageCapabilities = {
 };
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+const OAUTH_TIMEOUT_MS = 120_000;
+
+export class GoogleDriveAuthError extends Error {
+  readonly details?: string;
+
+  constructor(message: string, details?: string) {
+    super(message);
+    this.name = 'GoogleDriveAuthError';
+    this.details = details;
+  }
+}
 
 function getClientId(): string {
   return import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '';
+}
+
+function mapOAuthCallbackError(error: string, redirectUri: string): GoogleDriveAuthError {
+  switch (error) {
+    case 'access_denied':
+      return new GoogleDriveAuthError(
+        'Google sign-in was cancelled or access was denied.',
+        'If the app is in Testing mode, add your Gmail under OAuth consent screen → Test users in Google Cloud Console.',
+      );
+    case 'admin_policy_enforced':
+      return new GoogleDriveAuthError(
+        'Your Google Workspace admin blocked this app.',
+        `OAuth error: ${error}`,
+      );
+    default:
+      return new GoogleDriveAuthError(
+        `Google sign-in failed (${error}).`,
+        `Register redirect URI in Google Cloud Console: ${redirectUri}`,
+      );
+  }
+}
+
+function mapTokenExchangeError(
+  error: string,
+  errorDescription: string | undefined,
+  redirectUri: string,
+): GoogleDriveAuthError {
+  const desc = errorDescription?.trim();
+  switch (error) {
+    case 'redirect_uri_mismatch':
+      return new GoogleDriveAuthError(
+        'Redirect URI mismatch — this site URL is not registered in Google Cloud Console.',
+        `Add this exact Authorized redirect URI:\n${redirectUri}`,
+      );
+    case 'invalid_client':
+      return new GoogleDriveAuthError(
+        'Google rejected the token exchange (invalid_client).',
+        desc ??
+          'Verify VITE_GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET match the same Web application OAuth client in Google Cloud Console.',
+      );
+    case 'invalid_grant':
+      return new GoogleDriveAuthError(
+        'Sign-in code expired or was already used.',
+        'Close any open sign-in popups, wait a moment, and try Connect Google Drive once more.',
+      );
+    case 'invalid_request':
+      return new GoogleDriveAuthError(
+        'Token exchange request was rejected.',
+        desc ??
+          'If this mentions client_secret, add GOOGLE_CLIENT_SECRET to .env (server-only, no VITE_ prefix) and restart the dev server.',
+      );
+    case 'unauthorized_client':
+      return new GoogleDriveAuthError(
+        'This OAuth client is not authorized for this sign-in flow.',
+        desc ?? `Expected redirect URI: ${redirectUri}`,
+      );
+    default:
+      return new GoogleDriveAuthError(
+        `Token exchange failed (${error}).`,
+        desc ?? `Expected redirect URI: ${redirectUri}`,
+      );
+  }
 }
 
 interface DriveFileMeta {
@@ -43,8 +116,7 @@ export class GoogleDriveProvider implements StorageProvider {
     const clientId = getClientId();
     if (!clientId) throw new Error('VITE_GOOGLE_CLIENT_ID is not configured');
 
-    const token = await this.ensureAccessToken(clientId);
-    if (!token) throw new Error('Google Drive authentication failed');
+    await this.ensureAccessToken(clientId);
 
     await this.ensureFolder();
     await this.loadFileIds();
@@ -74,72 +146,19 @@ export class GoogleDriveProvider implements StorageProvider {
     return this.folderId ?? undefined;
   }
 
-  private async ensureAccessToken(clientId: string): Promise<string | null> {
+  private async ensureAccessToken(clientId: string): Promise<string> {
     const cached = await getGoogleTokens();
     if (cached && cached.expiresAt > Date.now() + 60_000) {
       return cached.accessToken;
     }
 
-    return new Promise((resolve) => {
-      const redirectUri = `${window.location.origin}/oauth/callback`;
-      const state = crypto.randomUUID();
-      sessionStorage.setItem('kbr_oauth_state', state);
-
-      const codeVerifier = generateCodeVerifier();
-      sessionStorage.setItem('kbr_code_verifier', codeVerifier);
-
-      generateCodeChallenge(codeVerifier).then((challenge) => {
-        const params = new URLSearchParams({
-          client_id: clientId,
-          redirect_uri: redirectUri,
-          response_type: 'code',
-          scope: SCOPES,
-          state,
-          code_challenge: challenge,
-          code_challenge_method: 'S256',
-          access_type: 'offline',
-          prompt: 'consent',
-        });
-
-        const width = 500;
-        const height = 600;
-        const left = window.screenX + (window.outerWidth - width) / 2;
-        const top = window.screenY + (window.outerHeight - height) / 2;
-        const popup = window.open(
-          `https://accounts.google.com/o/oauth2/v2/auth?${params}`,
-          'kbr_google_oauth',
-          `width=${width},height=${height},left=${left},top=${top}`,
-        );
-
-        const onMessage = async (event: MessageEvent) => {
-          if (event.origin !== window.location.origin) return;
-          if (event.data?.type !== 'kbr_oauth_code') return;
-          window.removeEventListener('message', onMessage);
-          popup?.close();
-
-          if (event.data.state !== state) {
-            resolve(null);
-            return;
-          }
-
-          const token = await exchangeCode(
-            clientId,
-            redirectUri,
-            event.data.code as string,
-            codeVerifier,
-          );
-          resolve(token);
-        };
-
-        window.addEventListener('message', onMessage);
-      });
-    });
+    const redirectUri = `${window.location.origin}/oauth/callback`;
+    return runOAuthPopup(clientId, redirectUri);
   }
 
   private async apiFetch(path: string, init?: RequestInit): Promise<Response> {
     const clientId = getClientId();
     const token = await this.ensureAccessToken(clientId);
-    if (!token) throw new Error('Not authenticated with Google Drive');
 
     const headers = new Headers(init?.headers);
     headers.set('Authorization', `Bearer ${token}`);
@@ -378,29 +397,170 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 }
 
 async function exchangeCode(
-  clientId: string,
   redirectUri: string,
   code: string,
   codeVerifier: string,
-): Promise<string | null> {
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: clientId,
-      code,
-      code_verifier: codeVerifier,
-      redirect_uri: redirectUri,
-      grant_type: 'authorization_code',
-    }),
-  });
-  if (!res.ok) return null;
-  const data = (await res.json()) as { access_token: string; expires_in: number };
+): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch('/api/google/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, codeVerifier, redirectUri }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Network error';
+    throw new GoogleDriveAuthError(
+      'Could not reach the app server to complete sign-in.',
+      `${msg}. Ensure the dev server is running. Token exchange requires GOOGLE_CLIENT_SECRET on the server.`,
+    );
+  }
+
+  const body = (await res.json()) as {
+    access_token?: string;
+    expires_in?: number;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (!res.ok || body.error) {
+    if (body.error === 'server_misconfigured') {
+      throw new GoogleDriveAuthError(
+        'Server is missing GOOGLE_CLIENT_SECRET.',
+        body.error_description ??
+          'In Google Cloud Console, open your Web application OAuth client and copy the Client secret into .env as GOOGLE_CLIENT_SECRET (no VITE_ prefix). Restart npm run dev.',
+      );
+    }
+    throw mapTokenExchangeError(body.error ?? `http_${res.status}`, body.error_description, redirectUri);
+  }
+
+  if (!body.access_token || !body.expires_in) {
+    throw new GoogleDriveAuthError(
+      'Server returned an unexpected token response.',
+      `HTTP ${res.status}. Expected access_token and expires_in.`,
+    );
+  }
+
   await setGoogleTokens({
-    accessToken: data.access_token,
-    expiresAt: Date.now() + data.expires_in * 1000,
+    accessToken: body.access_token,
+    expiresAt: Date.now() + body.expires_in * 1000,
   });
-  return data.access_token;
+  return body.access_token;
+}
+
+async function runOAuthPopup(clientId: string, redirectUri: string): Promise<string> {
+  const state = crypto.randomUUID();
+  const codeVerifier = generateCodeVerifier();
+  const challenge = await generateCodeChallenge(codeVerifier);
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: SCOPES,
+    state,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    access_type: 'offline',
+    prompt: 'consent',
+  });
+
+  return new Promise((resolve, reject) => {
+    const width = 500;
+    const height = 600;
+    const left = window.screenX + (window.outerWidth - width) / 2;
+    const top = window.screenY + (window.outerHeight - height) / 2;
+    const popup = window.open(
+      `https://accounts.google.com/o/oauth2/v2/auth?${params}`,
+      'kbr_google_oauth',
+      `width=${width},height=${height},left=${left},top=${top}`,
+    );
+
+    if (!popup) {
+      reject(
+        new GoogleDriveAuthError(
+          'Sign-in popup was blocked.',
+          'Allow popups for this site in your browser, then click Connect Google Drive again.',
+        ),
+      );
+      return;
+    }
+
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      window.removeEventListener('message', onMessage);
+      fn();
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      popup.close();
+      finish(() =>
+        reject(
+          new GoogleDriveAuthError(
+            'Sign-in timed out.',
+            `No response within ${OAUTH_TIMEOUT_MS / 1000}s. Expected callback at ${redirectUri}. If the popup opened in a new tab (common on mobile), try desktop Chrome or Firefox with popups allowed.`,
+          ),
+        ),
+      );
+    }, OAUTH_TIMEOUT_MS);
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== 'kbr_oauth_code') return;
+
+      popup.close();
+
+      if (event.data.error) {
+        finish(() => reject(mapOAuthCallbackError(String(event.data.error), redirectUri)));
+        return;
+      }
+
+      if (event.data.state !== state) {
+        finish(() =>
+          reject(
+            new GoogleDriveAuthError(
+              'Sign-in session mismatch.',
+              'The OAuth state did not match. Click Connect Google Drive once and complete sign-in without opening multiple popups.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      const code = event.data.code as string | undefined;
+      if (!code) {
+        finish(() =>
+          reject(
+            new GoogleDriveAuthError(
+              'Google did not return an authorization code.',
+              `Callback reached ${redirectUri} but no code was received.`,
+            ),
+          ),
+        );
+        return;
+      }
+
+      void exchangeCode(redirectUri, code, codeVerifier)
+        .then((token) => finish(() => resolve(token)))
+        .catch((err) =>
+          finish(() =>
+            reject(
+              err instanceof GoogleDriveAuthError
+                ? err
+                : new GoogleDriveAuthError(
+                    'Google Drive authentication failed.',
+                    err instanceof Error ? err.message : undefined,
+                  ),
+            ),
+          ),
+        );
+    };
+
+    window.addEventListener('message', onMessage);
+  });
 }
 
 export function createGoogleDriveProvider(): StorageProvider {
