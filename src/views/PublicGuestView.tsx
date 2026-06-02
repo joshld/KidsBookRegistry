@@ -1,11 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { BookOpen, Gift, Loader2 } from 'lucide-react';
-import type { Book, BookStatus, ListType, Action } from '../types';
+import { BookOpen, Gift, Loader2, ScanSearch } from 'lucide-react';
+import type { Book, BookStatus, ListType, Action, Child } from '../types';
 import BookCard from '../components/BookCard';
 import ClaimModal from '../components/ClaimModal';
+import CheckBookModal from '../components/CheckBookModal';
 import { registryService } from '../lib/storage/registryService';
-import type { PublicBookSlice } from '../lib/storage/types';
+import type { PublicBookSlice, PublicOwnedBookSlice } from '../lib/storage/types';
+import {
+  canGuestUnclaim,
+  getGuestClaimedBookIds,
+  recordGuestClaim,
+  removeGuestClaimRecord,
+} from '../lib/guestClaimSession';
 
 function toGuestBook(slice: PublicBookSlice, childId: string): Book {
   return {
@@ -21,27 +28,53 @@ function toGuestBook(slice: PublicBookSlice, childId: string): Book {
   };
 }
 
+function toOwnedGuestBook(slice: PublicOwnedBookSlice, childId: string): Book {
+  return {
+    id: `owned-${slice.isbn}`,
+    childId,
+    isbn: slice.isbn,
+    title: slice.title,
+    author: slice.author,
+    imageUrl: slice.imageUrl,
+    listType: 'owned',
+    status: 'Available',
+  };
+}
+
 export default function PublicGuestView() {
   const { childId } = useParams<{ childId: string }>();
   const [searchParams] = useSearchParams();
   const fileId = searchParams.get('f') ?? '';
-  const shareKey = window.location.hash.replace(/^#/, '');
+  const shareKey =
+    window.location.hash.replace(/^#/, '') || searchParams.get('k') || '';
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [childName, setChildName] = useState('');
-  const [books, setBooks] = useState<Book[]>([]);
+  const [wishlistBooks, setWishlistBooks] = useState<Book[]>([]);
+  const [ownedBooks, setOwnedBooks] = useState<Book[]>([]);
   const [claimingBook, setClaimingBook] = useState<Book | null>(null);
   const [claimError, setClaimError] = useState('');
+  const [showCheckBook, setShowCheckBook] = useState(false);
+
+  const checkBooks = useMemo(
+    () => [...wishlistBooks, ...ownedBooks],
+    [wishlistBooks, ownedBooks],
+  );
+
+  const guestChild = useMemo((): Child[] => {
+    if (!childId) return [];
+    return [{ id: childId, name: childName, profileId: 'guest' }];
+  }, [childId, childName]);
 
   const loadWishlist = useCallback(async () => {
     if (!childId || !shareKey) {
-      setError('Invalid share link — missing encryption key.');
+      setError('Invalid share link — missing encryption key. Ask for the full link (including the # part at the end).');
       setLoading(false);
       return;
     }
     if (!fileId) {
-      setError('Invalid share link — missing cloud file reference.');
+      setError('Invalid share link — missing cloud file reference (?f=).');
       setLoading(false);
       return;
     }
@@ -50,15 +83,18 @@ export default function PublicGuestView() {
     setError('');
     try {
       const slice = await registryService.loadGuestWishlist(fileId, childId, shareKey);
-      if (!slice) {
-        setError('Could not load wish list. The link may be expired or invalid.');
-        setBooks([]);
+      if (!slice.ok) {
+        setError(slice.message);
+        setWishlistBooks([]);
+        setOwnedBooks([]);
         return;
       }
       setChildName(slice.childName);
-      setBooks(slice.books.map((b) => toGuestBook(b, childId)));
-    } catch {
-      setError('Failed to load wish list from cloud storage.');
+      setWishlistBooks(slice.books.map((b) => toGuestBook(b, childId)));
+      setOwnedBooks(slice.ownedBooks.map((b) => toOwnedGuestBook(b, childId)));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setError(`Failed to load wish list: ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -68,17 +104,63 @@ export default function PublicGuestView() {
     void loadWishlist();
   }, [loadWishlist]);
 
-  async function handleClaim(bookId: string, claimedBy: string) {
+  async function handleClaim(bookId: string, claimedBy: string, scannedBook?: Book) {
     if (!childId || !fileId || !shareKey) return;
     setClaimError('');
     try {
-      await registryService.submitGuestClaim(fileId, childId, shareKey, bookId, claimedBy);
-      await loadWishlist();
+      const onList = wishlistBooks.some((b) => b.id === bookId);
+      const result = await registryService.submitGuestClaim(
+        fileId,
+        childId,
+        shareKey,
+        bookId,
+        claimedBy,
+        scannedBook && !onList
+          ? {
+              id: scannedBook.id,
+              isbn: scannedBook.isbn,
+              title: scannedBook.title,
+              author: scannedBook.author,
+              imageUrl: scannedBook.imageUrl,
+            }
+          : undefined,
+      );
+      if (result.ok) {
+        recordGuestClaim(fileId, childId, bookId);
+        setChildName(result.childName);
+        setWishlistBooks(result.books.map((b) => toGuestBook(b, childId)));
+        setOwnedBooks(result.ownedBooks.map((b) => toOwnedGuestBook(b, childId)));
+      }
       setClaimingBook(null);
+      setShowCheckBook(false);
     } catch (err) {
       setClaimError(err instanceof Error ? err.message : 'Claim failed');
     }
   }
+
+  async function handleGuestUnclaim(bookId: string) {
+    if (!childId || !fileId || !shareKey || !canGuestUnclaim(fileId, childId, bookId)) return;
+    setClaimError('');
+    try {
+      const result = await registryService.submitGuestUnclaim(fileId, childId, shareKey, bookId);
+      if (result.ok) {
+        removeGuestClaimRecord(fileId, childId, bookId);
+        setChildName(result.childName);
+        setWishlistBooks(result.books.map((b) => toGuestBook(b, childId)));
+        setOwnedBooks(result.ownedBooks.map((b) => toOwnedGuestBook(b, childId)));
+      }
+    } catch (err) {
+      setClaimError(err instanceof Error ? err.message : 'Could not undo claim');
+    }
+  }
+
+  const handleGuestClaim = useCallback(
+    (book: Book, claimedBy: string) => {
+      void handleClaim(book.id, claimedBy, book);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [childId, fileId, shareKey, wishlistBooks],
+  );
 
   const guestDispatch = useCallback(
     (action: Action) => {
@@ -88,6 +170,11 @@ export default function PublicGuestView() {
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [childId, fileId, shareKey],
+  );
+
+  const guestClaimedIds = useMemo(
+    () => (childId && fileId ? new Set(getGuestClaimedBookIds(fileId, childId)) : new Set<string>()),
+    [fileId, childId, wishlistBooks],
   );
 
   if (loading) {
@@ -110,8 +197,8 @@ export default function PublicGuestView() {
     );
   }
 
-  const available = books.filter((b) => b.status === 'Available');
-  const claimed = books.filter((b) => b.status === 'Claimed');
+  const available = wishlistBooks.filter((b) => b.status === 'Available');
+  const claimed = wishlistBooks.filter((b) => b.status === 'Claimed');
 
   return (
     <div className="min-h-svh bg-slate-50 dark:bg-slate-900">
@@ -139,7 +226,22 @@ export default function PublicGuestView() {
       )}
 
       <main className="max-w-lg mx-auto px-4 py-6 pb-12 space-y-6">
-        {books.length === 0 ? (
+        <button
+          onClick={() => setShowCheckBook(true)}
+          className="w-full rounded-2xl px-4 py-4 flex items-center gap-3 text-left transition-all bg-indigo-600 text-white shadow-sm hover:bg-indigo-700 active:scale-95"
+        >
+          <div className="rounded-xl p-2 shrink-0 bg-white/20">
+            <ScanSearch size={22} />
+          </div>
+          <div>
+            <p className="font-semibold text-sm">Check a book</p>
+            <p className="text-xs mt-0.5 text-indigo-200">
+              Scan to check a book — or claim one that isn&apos;t on the list yet
+            </p>
+          </div>
+        </button>
+
+        {wishlistBooks.length === 0 ? (
           <div className="text-center py-14 text-slate-400 dark:text-slate-500">
             <BookOpen size={36} className="mx-auto mb-3 opacity-40" />
             <p className="text-sm">No books on the list yet.</p>
@@ -165,7 +267,15 @@ export default function PublicGuestView() {
                 </h2>
                 <div className="space-y-3">
                   {claimed.map((book) => (
-                    <BookCard key={book.id} book={book} />
+                    <BookCard
+                      key={book.id}
+                      book={book}
+                      onGuestUnclaim={
+                        guestClaimedIds.has(book.id)
+                          ? () => void handleGuestUnclaim(book.id)
+                          : undefined
+                      }
+                    />
                   ))}
                 </div>
               </section>
@@ -179,6 +289,19 @@ export default function PublicGuestView() {
           book={claimingBook}
           dispatch={guestDispatch}
           onClose={() => setClaimingBook(null)}
+        />
+      )}
+
+      {showCheckBook && (
+        <CheckBookModal
+          books={checkBooks}
+          children={guestChild}
+          dispatch={guestDispatch}
+          mode="guest"
+          onClaim={handleGuestClaim}
+          guestClaimedBookIds={guestClaimedIds}
+          onGuestUnclaim={(bookId) => void handleGuestUnclaim(bookId)}
+          onClose={() => setShowCheckBook(false)}
         />
       )}
     </div>

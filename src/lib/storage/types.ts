@@ -29,9 +29,18 @@ export interface PublicBookSlice {
   claimedBy?: string;
 }
 
+/** Owned titles shared with guests for in-store duplicate checking (ISBN match only). */
+export interface PublicOwnedBookSlice {
+  isbn: string;
+  title: string;
+  author: string;
+  imageUrl: string;
+}
+
 export interface PublicSlice {
   childName: string;
   books: PublicBookSlice[];
+  ownedBooks?: PublicOwnedBookSlice[];
 }
 
 export interface ClaimRecord {
@@ -65,6 +74,8 @@ export interface StorageManifest {
   updatedAt: string;
   currentChecksum: string;
   previousChecksum: string;
+  /** Drive file id for registry.kbr — lets guests resolve the latest registry via manifest.json */
+  registryFileId?: string;
 }
 
 export interface StorageCapabilities {
@@ -89,5 +100,7 @@ export interface SyncStatus {
 export interface ProviderConfig {
   type: 'local' | 'google-drive';
   registryFileId?: string;
+  /** Stable public pointer — share links use this instead of registryFileId */
+  manifestFileId?: string;
   folderId?: string;
 }

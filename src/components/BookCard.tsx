@@ -6,9 +6,11 @@ interface Props {
   book: Book;
   dispatch?: Dispatch<Action>;
   onClaim?: () => void;
+  /** Guest: undo a claim made on this device this session */
+  onGuestUnclaim?: () => void;
 }
 
-export default function BookCard({ book, dispatch, onClaim }: Props) {
+export default function BookCard({ book, dispatch, onClaim, onGuestUnclaim }: Props) {
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   function handleRemove() {
@@ -57,7 +59,17 @@ export default function BookCard({ book, dispatch, onClaim }: Props) {
                 <CheckCircle size={11} />
                 Being bought{book.claimedBy ? ` by ${book.claimedBy}` : ''}
               </span>
-              {dispatch && (
+              {onGuestUnclaim && (
+                <button
+                  onClick={onGuestUnclaim}
+                  className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 active:opacity-60 transition-colors"
+                  title="Undo your claim on this device"
+                >
+                  <Undo2 size={12} />
+                  Undo my claim
+                </button>
+              )}
+              {dispatch && !onGuestUnclaim && (
                 <button
                   onClick={handleUnclaim}
                   className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 active:opacity-60 transition-colors"

@@ -14,6 +14,10 @@ interface CacheRecord {
   googleTokens: { accessToken: string; expiresAt: number } | null;
   pendingBlob: ArrayBuffer | null;
   lastSyncedAt: string | null;
+  /** Drive file ids that already have guest read permissions */
+  driveGuestAccessFileIds: string[] | null;
+  /** @deprecated migrated to driveGuestAccessFileIds */
+  driveGuestAccessFileId: string | null;
 }
 
 const DEFAULT_RECORD: CacheRecord = {
@@ -26,6 +30,8 @@ const DEFAULT_RECORD: CacheRecord = {
   googleTokens: null,
   pendingBlob: null,
   lastSyncedAt: null,
+  driveGuestAccessFileIds: null,
+  driveGuestAccessFileId: null,
 };
 
 function openDb(): Promise<IDBDatabase> {
@@ -129,6 +135,38 @@ export async function getLastSyncedAt(): Promise<string | null> {
 
 export async function setLastSyncedAt(at: string): Promise<void> {
   await writeRecord({ lastSyncedAt: at });
+}
+
+export async function getDriveGuestAccessFileIds(): Promise<Set<string>> {
+  const rec = await readRecord();
+  const ids = rec.driveGuestAccessFileIds ?? [];
+  if (rec.driveGuestAccessFileId) ids.push(rec.driveGuestAccessFileId);
+  return new Set(ids);
+}
+
+export async function addDriveGuestAccessFileId(fileId: string): Promise<void> {
+  const ids = await getDriveGuestAccessFileIds();
+  ids.add(fileId);
+  await writeRecord({ driveGuestAccessFileIds: [...ids], driveGuestAccessFileId: null });
+}
+
+export async function clearDriveGuestAccessFileIds(): Promise<void> {
+  await writeRecord({ driveGuestAccessFileIds: null, driveGuestAccessFileId: null });
+}
+
+/** @deprecated use getDriveGuestAccessFileIds */
+export async function getDriveGuestAccessFileId(): Promise<string | null> {
+  const ids = await getDriveGuestAccessFileIds();
+  return ids.size > 0 ? [...ids][0]! : null;
+}
+
+/** @deprecated use addDriveGuestAccessFileId / clearDriveGuestAccessFileIds */
+export async function setDriveGuestAccessFileId(fileId: string | null): Promise<void> {
+  if (fileId === null) {
+    await clearDriveGuestAccessFileIds();
+    return;
+  }
+  await addDriveGuestAccessFileId(fileId);
 }
 
 export async function clearCache(): Promise<void> {

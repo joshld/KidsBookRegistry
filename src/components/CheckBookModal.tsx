@@ -1,9 +1,10 @@
-import { useState, useCallback, type Dispatch } from 'react';
+import { useState, useCallback, useEffect, type Dispatch } from 'react';
 import { X, BookOpen, CheckCircle, Loader2, Gift } from 'lucide-react';
 import type { Book, Child, Action } from '../types';
 import { lookupIsbn } from '../lib/isbnLookup';
 import { mockLookup } from '../lib/mockLookup';
 import type { BookMeta } from '../lib/mockLookup';
+import { crypto as newId } from '../lib/uid';
 import BarcodeScanner from './BarcodeScanner';
 import ClaimModal from './ClaimModal';
 
@@ -19,9 +20,16 @@ interface Props {
   children: Child[];
   dispatch: Dispatch<Action>;
   onClose: () => void;
+  /** Guest wish-list link vs owner dashboard */
+  mode?: 'owner' | 'guest';
+  /** When set, used instead of dispatch for claims (guest off-list support) */
+  onClaim?: (book: Book, claimedBy: string) => void;
+  /** Book ids this guest device claimed this session (guest mode) */
+  guestClaimedBookIds?: Set<string>;
+  onGuestUnclaim?: (bookId: string) => void;
 }
 
-export default function CheckBookModal({ books, children, dispatch, onClose }: Props) {
+export default function CheckBookModal({ books, children, dispatch, onClose, mode = 'owner', onClaim, guestClaimedBookIds, onGuestUnclaim }: Props) {
   const [step, setStep] = useState<Step>('scan');
   const [isbn, setIsbn] = useState('');
   const [meta, setMeta] = useState<BookMeta | null>(null);
@@ -55,6 +63,18 @@ export default function CheckBookModal({ books, children, dispatch, onClose }: P
     setStep('result');
   }, [books, children]);
 
+  useEffect(() => {
+    if (step !== 'result' || !isbn) return;
+    setMatches(
+      books
+        .filter((b) => b.isbn === isbn)
+        .map((b) => ({
+          book: b,
+          childName: children.find((c) => c.id === b.childId)?.name ?? 'Unknown',
+        })),
+    );
+  }, [books, children, isbn, step]);
+
   function handleRescan() {
     setStep('scan');
     setIsbn('');
@@ -65,7 +85,6 @@ export default function CheckBookModal({ books, children, dispatch, onClose }: P
   // After a claim, refresh the match list from the latest books prop
   function handleClaimClose() {
     setClaimingBook(null);
-    // Re-derive matches so the UI immediately reflects the claimed status
     const refreshed = books
       .filter((b) => b.isbn === isbn)
       .map((b) => ({
@@ -73,6 +92,26 @@ export default function CheckBookModal({ books, children, dispatch, onClose }: P
         childName: children.find((c) => c.id === b.childId)?.name ?? 'Unknown',
       }));
     setMatches(refreshed);
+  }
+
+  const guestChild = children[0];
+  const scannedIsOwned =
+    mode === 'guest' && isbn
+      ? books.some((b) => b.isbn === isbn && b.listType === 'owned')
+      : false;
+
+  function startScannedClaim() {
+    if (!guestChild || !meta || !isbn) return;
+    setClaimingBook({
+      id: newId(),
+      childId: guestChild.id,
+      isbn,
+      title: meta.title,
+      author: meta.author,
+      imageUrl: meta.imageUrl,
+      listType: 'wishlist',
+      status: 'Available',
+    });
   }
 
   return (
@@ -100,7 +139,9 @@ export default function CheckBookModal({ books, children, dispatch, onClose }: P
             {step === 'scan' && (
               <>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-                  Scan a book's barcode to see if it's on any registry and whether it's been claimed.
+                  {mode === 'guest'
+                    ? 'Scan a barcode to see if this book is on the wish list, already claimed, or already owned — or claim a surprise gift.'
+                    : "Scan a book's barcode to see if it's on any registry and whether it's been claimed."}
                 </p>
                 <BarcodeScanner onScan={handleScan} />
               </>
@@ -144,21 +185,61 @@ export default function CheckBookModal({ books, children, dispatch, onClose }: P
 
                 {/* Registry results */}
                 {matches.length === 0 ? (
-                  <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 px-4 py-4 text-center">
-                    <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Not on any registry</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                      This book hasn't been added to any child's wish list yet.
-                    </p>
-                  </div>
+                  scannedIsOwned ? (
+                    <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-4 py-4 text-center">
+                      <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                        Already in their library
+                      </p>
+                      <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+                        This ISBN is listed as a book they already own.
+                      </p>
+                    </div>
+                  ) : mode === 'guest' && guestChild ? (
+                    <div className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/20 px-4 py-4 space-y-3">
+                      <div className="text-center">
+                        <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                          Not on the wish list yet
+                        </p>
+                        <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                          You can still claim it so others know you&apos;re buying it for {guestChild.name}.
+                        </p>
+                      </div>
+                      <button
+                        onClick={startScannedClaim}
+                        className="w-full bg-indigo-600 text-white text-sm font-medium rounded-xl py-3 flex items-center justify-center gap-2 hover:bg-indigo-700 active:scale-95 transition-all"
+                      >
+                        <Gift size={16} />
+                        I&apos;ll buy this for {guestChild.name}!
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/50 px-4 py-4 text-center">
+                      <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                        {mode === 'guest' ? 'Not on the wish list or library' : 'Not on any registry'}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        {mode === 'guest'
+                          ? 'This ISBN is not on their shared wish list and is not listed as owned.'
+                          : "This book hasn't been added to any child's wish list yet."}
+                      </p>
+                    </div>
+                  )
                 ) : (
                   <div className="space-y-2">
                     <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
-                      Found on {matches.length} {matches.length === 1 ? 'registry' : 'registries'}
+                      {mode === 'guest'
+                        ? 'Wish list & library'
+                        : `Found on ${matches.length} ${matches.length === 1 ? 'registry' : 'registries'}`}
                     </p>
                     {matches.map(({ book, childName }) => {
                       const isOwned = book.listType === 'owned';
                       const isClaimed = book.status === 'Claimed';
                       const isClaimable = !isOwned && !isClaimed;
+                      const canUndoGuestClaim =
+                        mode === 'guest' &&
+                        isClaimed &&
+                        !isOwned &&
+                        guestClaimedBookIds?.has(book.id) === true;
 
                       let containerStyle: string;
                       if (isOwned) containerStyle = 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20';
@@ -210,6 +291,17 @@ export default function CheckBookModal({ books, children, dispatch, onClose }: P
                               </button>
                             </div>
                           )}
+
+                          {canUndoGuestClaim && onGuestUnclaim && (
+                            <div className="px-4 pb-3">
+                              <button
+                                onClick={() => onGuestUnclaim(book.id)}
+                                className="w-full border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-xl py-2.5 hover:bg-slate-50 dark:hover:bg-slate-700/50 active:scale-95 transition-all"
+                              >
+                                Undo my claim
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -233,6 +325,9 @@ export default function CheckBookModal({ books, children, dispatch, onClose }: P
         <ClaimModal
           book={claimingBook}
           dispatch={dispatch}
+          onConfirm={
+            onClaim ? (claimedBy) => onClaim(claimingBook, claimedBy) : undefined
+          }
           onClose={handleClaimClose}
         />
       )}

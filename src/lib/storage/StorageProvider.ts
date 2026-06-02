@@ -19,6 +19,12 @@ export interface StorageProvider {
   /** Make registry file readable by anyone with link (Google Drive) */
   ensurePublicReadAccess?(fileName: string): Promise<void>;
 
+  /** Set guest read+write once (Google Drive) — no-op if already configured */
+  ensureGuestAccessOnce?(fileName: string): Promise<void>;
+
+  /** Provider supports skipping tmp round-trip validation on save */
+  supportsFastSave?: boolean;
+
   /** Guest write for claims — provider-specific */
   guestUpdateRegistry?(fileId: string, data: Uint8Array): Promise<void>;
 }

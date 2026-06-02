@@ -6,16 +6,21 @@ interface Props {
   book: Book;
   dispatch: Dispatch<Action>;
   onClose: () => void;
+  onConfirm?: (claimedBy: string) => void;
 }
 
-export default function ClaimModal({ book, dispatch, onClose }: Props) {
+export default function ClaimModal({ book, dispatch, onClose, onConfirm }: Props) {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
 
   function handleClaim(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) { setError('Please enter your name.'); return; }
-    dispatch({ type: 'CLAIM_BOOK', bookId: book.id, claimedBy: name.trim() });
+    if (onConfirm) {
+      onConfirm(name.trim());
+    } else {
+      dispatch({ type: 'CLAIM_BOOK', bookId: book.id, claimedBy: name.trim() });
+    }
     onClose();
   }
 

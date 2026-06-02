@@ -41,6 +41,14 @@ export function buildPublicSlice(child: Child, books: Book[]): PublicSlice {
         status: b.status,
         claimedBy: b.claimedBy,
       })),
+    ownedBooks: books
+      .filter((b) => b.childId === child.id && b.listType === 'owned')
+      .map((b) => ({
+        isbn: b.isbn,
+        title: b.title,
+        author: b.author,
+        imageUrl: b.imageUrl,
+      })),
   };
 }
 
@@ -219,9 +227,35 @@ export async function decryptClaims(
 export function mergeClaimsIntoState(container: RegistryContainer): AppState {
   const state = structuredClone(container.owner.state);
 
+  for (const [childId, slice] of Object.entries(container.public)) {
+    for (const pub of slice.books) {
+      const byId = state.books.find((b) => b.id === pub.id && b.childId === childId);
+      const byIsbn = state.books.find(
+        (b) => b.childId === childId && b.isbn === pub.isbn && b.listType === 'wishlist',
+      );
+      if (!byId && !byIsbn) {
+        state.books.push({
+          id: pub.id,
+          childId,
+          isbn: pub.isbn,
+          title: pub.title,
+          author: pub.author,
+          imageUrl: pub.imageUrl,
+          listType: 'wishlist',
+          status: pub.status,
+          claimedBy: pub.claimedBy,
+        });
+      }
+    }
+  }
+
   for (const [childId, records] of Object.entries(container.claims)) {
     for (const claim of records) {
-      const book = state.books.find((b) => b.id === claim.bookId && b.childId === childId);
+      const book =
+        state.books.find((b) => b.id === claim.bookId && b.childId === childId) ??
+        state.books.find(
+          (b) => b.childId === childId && b.listType === 'wishlist' && b.id === claim.bookId,
+        );
       if (!book || book.listType !== 'wishlist') continue;
       if (book.status === 'Claimed') continue;
       book.status = 'Claimed';
@@ -258,11 +292,20 @@ export function createClaimRecord(bookId: string, claimedBy: string): ClaimRecor
   };
 }
 
+export interface GuestScannedBook {
+  id: string;
+  isbn: string;
+  title: string;
+  author: string;
+  imageUrl: string;
+}
+
 export async function appendClaimToFile(
   file: RegistryFile,
   childId: string,
   shareKey: string,
   claim: ClaimRecord,
+  scannedBook?: GuestScannedBook,
 ): Promise<RegistryFile> {
   const key = await deriveKeyFromShareKey(shareKey);
   const existing = file.claims[childId]
@@ -278,13 +321,82 @@ export async function appendClaimToFile(
     ? await decryptJson<PublicSlice>(key, file.public[childId]!)
     : null;
 
+  if (!publicSlice && !scannedBook) {
+    return {
+      ...file,
+      updatedAt: new Date().toISOString(),
+      claims: { ...file.claims, [childId]: claimsBlob },
+    };
+  }
+
+  const slice: PublicSlice = publicSlice ?? {
+    childName: '',
+    books: [],
+    ownedBooks: [],
+  };
+
+  if (scannedBook) {
+    if (slice.ownedBooks?.some((o) => o.isbn === scannedBook.isbn)) {
+      throw new Error('This child already owns this book.');
+    }
+    const onList = slice.books.find((b) => b.isbn === scannedBook.isbn);
+    if (onList?.status === 'Claimed') {
+      throw new Error(
+        `Already being bought${onList.claimedBy ? ` by ${onList.claimedBy}` : ''}.`,
+      );
+    }
+  }
+
   let updatedPublic = file.public;
-  if (publicSlice) {
-    const book = publicSlice.books.find((b) => b.id === claim.bookId);
-    if (book && book.status === 'Available') {
-      book.status = 'Claimed';
-      book.claimedBy = claim.claimedBy;
-      updatedPublic = { ...file.public, [childId]: await encryptJson(key, publicSlice) };
+  const book = slice.books.find((b) => b.id === claim.bookId);
+
+  if (book && book.status === 'Available') {
+    book.status = 'Claimed';
+    book.claimedBy = claim.claimedBy;
+    updatedPublic = { ...file.public, [childId]: await encryptJson(key, slice) };
+  } else if (!book && scannedBook) {
+    slice.books.push({
+      id: scannedBook.id,
+      isbn: scannedBook.isbn,
+      title: scannedBook.title,
+      author: scannedBook.author,
+      imageUrl: scannedBook.imageUrl,
+      status: 'Claimed',
+      claimedBy: claim.claimedBy,
+    });
+    updatedPublic = { ...file.public, [childId]: await encryptJson(key, slice) };
+  }
+
+  return {
+    ...file,
+    updatedAt: new Date().toISOString(),
+    claims: { ...file.claims, [childId]: claimsBlob },
+    public: updatedPublic,
+  };
+}
+
+export async function removeClaimFromFile(
+  file: RegistryFile,
+  childId: string,
+  shareKey: string,
+  bookId: string,
+): Promise<RegistryFile> {
+  const key = await deriveKeyFromShareKey(shareKey);
+
+  const existing = file.claims[childId]
+    ? await decryptJson<ClaimRecord[]>(key, file.claims[childId]!)
+    : [];
+  const updatedClaims = existing.filter((c) => c.bookId !== bookId);
+  const claimsBlob = await encryptJson(key, updatedClaims);
+
+  let updatedPublic = file.public;
+  if (file.public[childId]) {
+    const slice = await decryptJson<PublicSlice>(key, file.public[childId]!);
+    const book = slice.books.find((b) => b.id === bookId);
+    if (book) {
+      book.status = 'Available';
+      delete book.claimedBy;
+      updatedPublic = { ...file.public, [childId]: await encryptJson(key, slice) };
     }
   }
 

@@ -11,6 +11,16 @@
   status = 200
 
 [[redirects]]
+  from = "/api/google/registry"
+  to = "/.netlify/functions/google-registry"
+  status = 200
+
+[[redirects]]
+  from = "/api/guest-claims"
+  to = "/.netlify/functions/guest-claims"
+  status = 200
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200

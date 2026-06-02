@@ -70,7 +70,6 @@ function AppRoutes() {
             <RegistryView state={state} dispatch={dispatch} theme={theme} toggleTheme={toggleTheme} />
           }
         />
-        <Route path="/share/:childId" element={<PublicGuestView />} />
         <Route path="/oauth/callback" element={<OAuthCallbackView />} />
       </Routes>
     </>
@@ -89,6 +88,8 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/oauth/callback" element={<OAuthCallbackView />} />
+          {/* Guest wish lists — no cloud login or passphrase on the visitor's device */}
+          <Route path="/share/:childId" element={<PublicGuestView />} />
           <Route path="/*" element={<AppRoutes />} />
         </Routes>
       </BrowserRouter>

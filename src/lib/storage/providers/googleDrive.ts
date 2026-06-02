@@ -10,6 +10,9 @@ import {
   getProviderConfig,
   setGoogleTokens,
   setProviderConfig,
+  getDriveGuestAccessFileIds,
+  addDriveGuestAccessFileId,
+  clearDriveGuestAccessFileIds,
 } from '../localCache';
 
 const CAPABILITIES: StorageCapabilities = {
@@ -107,10 +110,12 @@ interface DriveFileMeta {
 export class GoogleDriveProvider implements StorageProvider {
   id = 'google-drive';
   capabilities = CAPABILITIES;
+  supportsFastSave = true;
   private connected = false;
   private folderId: string | null = null;
   private fileIds: Record<string, string> = {};
   private revisions: Record<string, string> = {};
+  private fileIdsLoaded = false;
 
   async connect(): Promise<void> {
     const clientId = getClientId();
@@ -126,11 +131,13 @@ export class GoogleDriveProvider implements StorageProvider {
       type: 'google-drive',
       folderId: this.folderId ?? undefined,
       registryFileId: this.fileIds[REGISTRY_CURRENT],
+      manifestFileId: this.fileIds[MANIFEST_FILE],
     });
   }
 
   async disconnect(): Promise<void> {
     this.connected = false;
+    this.fileIdsLoaded = false;
     await setGoogleTokens(null);
   }
 
@@ -140,6 +147,10 @@ export class GoogleDriveProvider implements StorageProvider {
 
   getRegistryFileId(): string | undefined {
     return this.fileIds[REGISTRY_CURRENT];
+  }
+
+  getManifestFileId(): string | undefined {
+    return this.fileIds[MANIFEST_FILE];
   }
 
   getFolderId(): string | undefined {
@@ -194,20 +205,52 @@ export class GoogleDriveProvider implements StorageProvider {
     this.folderId = folder.id;
   }
 
+  private async loadFileIdsOnce(force = false): Promise<void> {
+    if (this.fileIdsLoaded && !force) return;
+    await this.loadFileIds();
+    this.fileIdsLoaded = true;
+  }
+
   private async loadFileIds(): Promise<void> {
     if (!this.folderId) return;
     const q = encodeURIComponent(`'${this.folderId}' in parents and trashed=false`);
-    const res = await this.apiFetch(`/files?q=${q}&fields=files(id,name,modifiedTime,md5Checksum)`);
+    const res = await this.apiFetch(
+      `/files?q=${q}&fields=files(id,name,modifiedTime,md5Checksum)&pageSize=200`,
+    );
     const data = (await res.json()) as { files: DriveFileMeta[] };
-    this.fileIds = {};
+
+    const bestByName = new Map<string, DriveFileMeta>();
     for (const f of data.files) {
+      const existing = bestByName.get(f.name);
+      if (!existing || (f.modifiedTime ?? '') > (existing.modifiedTime ?? '')) {
+        bestByName.set(f.name, f);
+      }
+    }
+
+    const config = await getProviderConfig();
+    if (config?.registryFileId) {
+      const preferred = data.files.find((f) => f.id === config.registryFileId);
+      if (preferred) {
+        bestByName.set(REGISTRY_CURRENT, preferred);
+      }
+    }
+    if (config?.manifestFileId) {
+      const preferred = data.files.find((f) => f.id === config.manifestFileId);
+      if (preferred) {
+        bestByName.set(MANIFEST_FILE, preferred);
+      }
+    }
+
+    this.fileIds = {};
+    this.revisions = {};
+    for (const f of bestByName.values()) {
       this.fileIds[f.name] = f.id;
       if (f.md5Checksum) this.revisions[f.name] = f.md5Checksum;
     }
   }
 
   async readFile(name: string): Promise<Uint8Array | null> {
-    await this.loadFileIds();
+    await this.loadFileIdsOnce();
     const fileId = this.fileIds[name];
     if (!fileId) return null;
 
@@ -222,7 +265,7 @@ export class GoogleDriveProvider implements StorageProvider {
   }
 
   async writeFile(name: string, data: Uint8Array): Promise<void> {
-    await this.loadFileIds();
+    await this.loadFileIdsOnce();
     const existingId = this.fileIds[name];
     const token = await getGoogleTokens();
     if (!token) throw new Error('Not authenticated');
@@ -240,10 +283,6 @@ export class GoogleDriveProvider implements StorageProvider {
         },
       );
       if (!res.ok) throw new Error(`Drive upload failed: ${res.status}`);
-      const meta = (await this.apiFetch(`/files/${existingId}?fields=md5Checksum`).then((r) =>
-        r.json(),
-      )) as DriveFileMeta;
-      if (meta.md5Checksum) this.revisions[name] = meta.md5Checksum;
       return;
     }
 
@@ -285,6 +324,17 @@ export class GoogleDriveProvider implements StorageProvider {
         type: 'google-drive',
         folderId: this.folderId,
         registryFileId: created.id,
+        manifestFileId: this.fileIds[MANIFEST_FILE],
+      });
+    }
+
+    if (name === MANIFEST_FILE) {
+      const config = await getProviderConfig();
+      await setProviderConfig({
+        type: 'google-drive',
+        folderId: this.folderId ?? config?.folderId,
+        registryFileId: config?.registryFileId ?? this.fileIds[REGISTRY_CURRENT],
+        manifestFileId: created.id,
       });
     }
   }
@@ -297,12 +347,31 @@ export class GoogleDriveProvider implements StorageProvider {
   }
 
   async getRevision(name: string): Promise<string | null> {
-    await this.loadFileIds();
+    await this.loadFileIdsOnce();
     return this.revisions[name] ?? null;
   }
 
   async setRevision(name: string, revision: string): Promise<void> {
     this.revisions[name] = revision;
+  }
+
+  async ensureGuestAccessOnce(fileName: string, force = false): Promise<void> {
+    await this.loadFileIdsOnce();
+    const fileId = this.fileIds[fileName];
+    if (!fileId) return;
+
+    const cached = await getDriveGuestAccessFileIds();
+    if (!force && cached.has(fileId)) return;
+
+    const readerOk = await this.ensurePublicPermission(fileName, 'reader');
+    await this.ensurePublicPermission(fileName, 'writer');
+    if (!readerOk) {
+      await clearDriveGuestAccessFileIds();
+      throw new Error(
+        'Could not make the registry readable for guests. Try copying the share link again after saving.',
+      );
+    }
+    await addDriveGuestAccessFileId(fileId);
   }
 
   async ensurePublicReadAccess(fileName: string): Promise<void> {
@@ -313,16 +382,18 @@ export class GoogleDriveProvider implements StorageProvider {
     await this.ensurePublicPermission(fileName, 'writer');
   }
 
-  private async ensurePublicPermission(fileName: string, role: 'reader' | 'writer'): Promise<void> {
-    await this.loadFileIds();
+  private async ensurePublicPermission(fileName: string, role: 'reader' | 'writer'): Promise<boolean> {
+    await this.loadFileIdsOnce();
     const fileId = this.fileIds[fileName];
-    if (!fileId) return;
+    if (!fileId) return false;
 
-    await this.apiFetch(`/files/${fileId}/permissions`, {
+    const res = await this.apiFetch(`/files/${fileId}/permissions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ role, type: 'anyone' }),
     });
+    // Permission may already exist from a prior save — treat as success.
+    return res.ok || res.status === 409;
   }
 
   /** Guest write for claims — requires public write permission on registry file */
@@ -359,9 +430,26 @@ export class GoogleDriveProvider implements StorageProvider {
 
   /** Download registry file publicly (no auth) for guests */
   static async fetchPublicFile(fileId: string): Promise<Uint8Array | null> {
+    try {
+      const proxy = await fetch(
+        `/api/google/registry?fileId=${encodeURIComponent(fileId)}`,
+      );
+      if (proxy.ok) {
+        const bytes = new Uint8Array(await proxy.arrayBuffer());
+        const head = new TextDecoder().decode(bytes.slice(0, 8)).trimStart();
+        if (head.startsWith('{')) return bytes;
+        return null;
+      }
+    } catch {
+      // fall through to direct fetch (may work in some environments)
+    }
+
     const res = await fetch(`https://drive.google.com/uc?export=download&id=${fileId}`);
     if (!res.ok) return null;
-    return new Uint8Array(await res.arrayBuffer());
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const head = new TextDecoder().decode(bytes.slice(0, 8)).trimStart();
+    if (!head.startsWith('{')) return null;
+    return bytes;
   }
 
   /** Attempt guest write without owner session (requires public write permission) */
